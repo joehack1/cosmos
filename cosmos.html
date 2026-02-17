@@ -432,14 +432,14 @@
     }`;
     const program=makeProgram(vs,fs);
     gl.useProgram(program);
+    // Particles VAO
     const randData=new Float32Array(params.numParticles*3);
     let idx=0;
     for(let t=0;t<params.numThreads;t++){const phiFrac=t/params.numThreads;const layer=Math.random();for(let j=0;j<params.particlesPerThread;j++){const i3=idx*3;randData[i3]=Math.random();randData[i3+1]=phiFrac;randData[i3+2]=layer;idx++;}}
-    const vbo=gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER,vbo);
-    gl.bufferData(gl.ARRAY_BUFFER,randData,gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+    const vaoParticles=gl.createVertexArray();gl.bindVertexArray(vaoParticles);
+    const vbo=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vbo);gl.bufferData(gl.ARRAY_BUFFER,randData,gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+    gl.bindVertexArray(null);
     const loc={uTime:gl.getUniformLocation(program,'uTime'),uFlowSpeed:gl.getUniformLocation(program,'uFlowSpeed'),uSize:gl.getUniformLocation(program,'uSize'),uMinY:gl.getUniformLocation(program,'uMinY'),uMaxY:gl.getUniformLocation(program,'uMaxY'),uNeck:gl.getUniformLocation(program,'uNeck'),uFlare:gl.getUniformLocation(program,'uFlare'),uTwistTurns:gl.getUniformLocation(program,'uTwistTurns'),uPulseTime:gl.getUniformLocation(program,'uPulseTime'),uFieryHue:gl.getUniformLocation(program,'uFieryHue'),uBaseHue:gl.getUniformLocation(program,'uBaseHue'),uProj:gl.getUniformLocation(program,'uProj'),uView:gl.getUniformLocation(program,'uView')};
     // Sun (central sprite) program
     const sunVS=`#version 300 es
@@ -480,6 +480,101 @@
     }`;
     const sunProgram=makeProgram(sunVS,sunFS);
     const sunLoc={uProj:gl.getUniformLocation(sunProgram,'uProj'),uView:gl.getUniformLocation(sunProgram,'uView'),uTime:gl.getUniformLocation(sunProgram,'uTime'),uPulseTime:gl.getUniformLocation(sunProgram,'uPulseTime'),uSunBaseSize:gl.getUniformLocation(sunProgram,'uSunBaseSize'),uFieryHue:gl.getUniformLocation(sunProgram,'uFieryHue')};
+    // Lines (flow threads) program
+    const lineVS=`#version 300 es
+    precision highp float;
+    layout(location=0) in float aS;
+    uniform float uTime,uFlowSpeed,uMinY,uMaxY,uNeck,uFlare,uTwistTurns,uPulseTime,uBaseHue;
+    uniform int uLineThreads;
+    uniform mat4 uProj,uView;
+    out float vAlpha;
+    out float vGlow;
+    out float vHue;
+    out float vProgress;
+    out float vPulseGlow;
+    float radiusAtY(float y,float a,float b){return a*sqrt(1.0+(y*y)/(b*b));}
+    float hash(float x){return fract(sin(x*43758.5453)*48997.0);}
+    void main(){
+      float phiFrac=float(gl_InstanceID)/float(uLineThreads);
+      float speedVar=0.9+0.2*hash(phiFrac*97.0);
+      float progress=fract(aS + uTime*uFlowSpeed*speedVar + phiFrac*0.1);
+      float y=mix(uMaxY,uMinY,progress);
+      float r=radiusAtY(y,uNeck,uFlare);
+      float twist=6.2831853*uTwistTurns;
+      float phi=6.2831853*phiFrac + progress*twist + uTime*0.02;
+      vec3 pos=vec3(r*cos(phi),y,r*sin(phi));
+      vPulseGlow=0.0;
+      float pulseAge=uTime-uPulseTime;
+      if(pulseAge>0.0&&pulseAge<4.0){
+        float pulseSpeed=0.4;
+        float pulsePosDown=mod(0.5+pulseAge*pulseSpeed,1.0);
+        float distDown=min(abs(progress-pulsePosDown),1.0-abs(progress-pulsePosDown));
+        float glowDown=smoothstep(0.12,0.0,distDown)*(1.0-smoothstep(3.0,4.0,pulseAge));
+        float pulsePosUp=mod(0.5-pulseAge*pulseSpeed+1.0,1.0);
+        float distUp=min(abs(progress-pulsePosUp),1.0-abs(progress-pulsePosUp));
+        float glowUp=smoothstep(0.12,0.0,distUp)*(1.0-smoothstep(3.0,4.0,pulseAge));
+        vPulseGlow=max(glowDown,glowUp);
+        if(vPulseGlow>0.0){
+          float wave=pow(vPulseGlow,1.4);
+          vec3 normal=normalize(vec3(pos.x,0.0,pos.z));
+          pos+=normal*wave*0.35;
+        }
+      }
+      vec4 pv=uView*vec4(pos,1.0);
+      gl_Position=uProj*pv;
+      float neckGlow=1.0-smoothstep(0.0,1.4,abs(y));
+      vGlow=neckGlow;
+      vAlpha=0.25+0.5*neckGlow;
+      vHue=uBaseHue;
+      vProgress=progress;
+    }`;
+    const lineFS=`#version 300 es
+    precision highp float;
+    uniform float uFieryHue;
+    in float vAlpha;
+    in float vGlow;
+    in float vHue;
+    in float vProgress;
+    in float vPulseGlow;
+    out vec4 outColor;
+    vec3 hsv2rgb(vec3 c){vec4 K=vec4(1.0,2.0/3.0,1.0/3.0,3.0);vec3 p=abs(fract(c.xxx+K.xyz)*6.0-K.www);return c.z*mix(K.xxx,clamp(p-K.xxx,0.0,1.0),c.y);}
+    void main(){
+      float sparkle=0.85+0.15*sin(60.0*vProgress);
+      vec3 col=hsv2rgb(vec3(vHue,0.75,0.95));
+      col+=0.2*vGlow;
+      if(vPulseGlow>0.01){
+        float wave=pow(vPulseGlow,1.4);
+        vec3 fiery=hsv2rgb(vec3(uFieryHue,0.95,1.0));
+        col+=fiery*wave*0.7;
+        sparkle+=wave*0.5;
+      }
+      float alpha=vAlpha*sparkle;
+      outColor=vec4(col,alpha);
+    }`;
+    const lineProgram=makeProgram(lineVS,lineFS);
+    const lineLoc={
+      uProj:gl.getUniformLocation(lineProgram,'uProj'),
+      uView:gl.getUniformLocation(lineProgram,'uView'),
+      uTime:gl.getUniformLocation(lineProgram,'uTime'),
+      uFlowSpeed:gl.getUniformLocation(lineProgram,'uFlowSpeed'),
+      uMinY:gl.getUniformLocation(lineProgram,'uMinY'),
+      uMaxY:gl.getUniformLocation(lineProgram,'uMaxY'),
+      uNeck:gl.getUniformLocation(lineProgram,'uNeck'),
+      uFlare:gl.getUniformLocation(lineProgram,'uFlare'),
+      uTwistTurns:gl.getUniformLocation(lineProgram,'uTwistTurns'),
+      uPulseTime:gl.getUniformLocation(lineProgram,'uPulseTime'),
+      uBaseHue:gl.getUniformLocation(lineProgram,'uBaseHue'),
+      uFieryHue:gl.getUniformLocation(lineProgram,'uFieryHue'),
+      uLineThreads:gl.getUniformLocation(lineProgram,'uLineThreads')
+    };
+    const nSegments=120;
+    const numLineThreads=64;
+    const segData=new Float32Array(nSegments+1);
+    for(let i=0;i<=nSegments;i++) segData[i]=i/nSegments;
+    const vaoLines=gl.createVertexArray();gl.bindVertexArray(vaoLines);
+    const segVbo=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,segVbo);gl.bufferData(gl.ARRAY_BUFFER,segData,gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,1,gl.FLOAT,false,0,0);
+    gl.bindVertexArray(null);
     function perspective(fovy,aspect,near,far){const f=1/Math.tan(fovy/2),nf=1/(near-far);return new Float32Array([f/aspect,0,0,0,0,f,0,0,0,0,(far+near)*nf,-1,0,0,(2*far*near)*nf,0])}
     function normalize(v){const n=Math.hypot(v[0],v[1],v[2])||1;return [v[0]/n,v[1]/n,v[2]/n]}
     function cross(a,b){return [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]}
@@ -507,6 +602,18 @@
     gl.uniform1f(loc.uFieryHue,params.fieryHue);
     gl.uniform1f(loc.uBaseHue,params.goldHue);
     gl.uniform1f(loc.uPulseTime,-10.0);
+    gl.useProgram(lineProgram);
+    gl.uniform1f(lineLoc.uFlowSpeed,params.flowSpeed);
+    gl.uniform1f(lineLoc.uMinY,params.minY);
+    gl.uniform1f(lineLoc.uMaxY,params.maxY);
+    gl.uniform1f(lineLoc.uNeck,params.neckRadius);
+    gl.uniform1f(lineLoc.uFlare,params.flare);
+    gl.uniform1f(lineLoc.uTwistTurns,params.twistTurns);
+    gl.uniform1f(lineLoc.uPulseTime,-10.0);
+    gl.uniform1f(lineLoc.uBaseHue,params.goldHue);
+    gl.uniform1f(lineLoc.uFieryHue,params.fieryHue);
+    gl.uniform1i(lineLoc.uLineThreads,numLineThreads);
+    gl.useProgram(program);
     gl.useProgram(sunProgram);
     gl.uniform1f(sunLoc.uFieryHue,params.fieryHue);
     gl.useProgram(program);
@@ -516,7 +623,17 @@
     let start=performance.now(),pulseStart=-10.0;
     button.addEventListener('click',()=>{pulseStart=(performance.now()-start)/1000;gl.uniform1f(loc.uPulseTime,pulseStart);});
     function randomHue(){return Math.random();}
-    function setColors(baseHue,fieryHue){gl.useProgram(program);gl.uniform1f(loc.uBaseHue,baseHue);gl.uniform1f(loc.uFieryHue,fieryHue);gl.useProgram(sunProgram);gl.uniform1f(sunLoc.uFieryHue,fieryHue);gl.useProgram(program);}
+    function setColors(baseHue,fieryHue){
+      gl.useProgram(program);
+      gl.uniform1f(loc.uBaseHue,baseHue);
+      gl.uniform1f(loc.uFieryHue,fieryHue);
+      gl.useProgram(lineProgram);
+      gl.uniform1f(lineLoc.uBaseHue,baseHue);
+      gl.uniform1f(lineLoc.uFieryHue,fieryHue);
+      gl.useProgram(sunProgram);
+      gl.uniform1f(sunLoc.uFieryHue,fieryHue);
+      gl.useProgram(program);
+    }
     colorBtn.addEventListener('click',()=>{const base=randomHue();const fiery=(base+0.08)%1.0;setColors(base,fiery);});
     function frame(){
       const now=performance.now();const t=(now-start)/1000;
@@ -529,7 +646,18 @@
       gl.uniformMatrix4fv(loc.uView,false,view);
       gl.uniform1f(loc.uTime,t);
       gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.bindVertexArray(vaoParticles);
       gl.drawArrays(gl.POINTS,0,params.numParticles);
+      gl.bindVertexArray(null);
+      // Lines pass
+      gl.useProgram(lineProgram);
+      gl.uniformMatrix4fv(lineLoc.uProj,false,proj);
+      gl.uniformMatrix4fv(lineLoc.uView,false,view);
+      gl.uniform1f(lineLoc.uTime,t);
+      gl.uniform1f(lineLoc.uPulseTime,pulseStart);
+      gl.bindVertexArray(vaoLines);
+      gl.drawArraysInstanced(gl.LINE_STRIP,0,nSegments+1,numLineThreads);
+      gl.bindVertexArray(null);
       gl.useProgram(sunProgram);
       gl.uniformMatrix4fv(sunLoc.uProj,false,proj);
       gl.uniformMatrix4fv(sunLoc.uView,false,view);
