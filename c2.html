@@ -70,10 +70,12 @@
     .glass-button:active {
         transform: translateY(0px);
     }
+    .glass-button.color { left: 180px; }
   </style>
   <div class="glow-corner gc1"></div>
   <div class="glow-corner gc2"></div>
   <button class="glass-button">ENERGIZE</button>
+  <button class="glass-button color">RANDOMIZE COLOR</button>
   <canvas id="c"></canvas>
   <script type="importmap">
     {
@@ -189,6 +191,7 @@
         uniform float uFlare;
         uniform float uTwistTurns;
         uniform float uPulseTime;
+        uniform float uGoldHue;
         attribute vec3 aRandom;
         varying float vAlpha;
         varying float vGlow;
@@ -233,7 +236,7 @@
           vGlow = neckGlow;
           float edgeFade = smoothstep(0.0, 0.06, progress) * (1.0 - smoothstep(0.94, 1.0, progress));
           vAlpha = 0.23 + 0.62 * neckGlow * edgeFade;
-          vHue = ${params.goldHue.toFixed(6)} + 0.02 * (aRandom.z - 0.5);
+          vHue = uGoldHue + 0.02 * (aRandom.z - 0.5);
           vProgress = progress;
           vRandom = aRandom.z;
         }
@@ -311,6 +314,14 @@
       const currentTime = clock.getElapsedTime();
       particleMaterial.uniforms.uPulseTime.value = currentTime;
       pulseStart = currentTime;
+    });
+    const colorBtn = document.querySelector('.glass-button.color');
+    function randomHue(){ return Math.random(); }
+    colorBtn.addEventListener('click', () => {
+      const base = randomHue();
+      const fiery = (base + 0.08) % 1.0;
+      particleMaterial.uniforms.uGoldHue.value = base;
+      particleMaterial.uniforms.uFieryHue.value = fiery;
     });
     function animate() {
       requestAnimationFrame(animate);
