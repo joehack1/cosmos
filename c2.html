@@ -23,7 +23,7 @@
       color: #fff;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
     }
-    canvas { display: block; }
+    canvas { display: block; touch-action: none; }
     .glow-corner {
       position: absolute;
       width: 40vmax;
@@ -71,14 +71,49 @@
         transform: translateY(0px);
     }
     .glass-button.color { left: 180px; }
-    .glass-button.auth { left: 360px; }
-    .glass-button:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(40%); }
+    .touch-controls {
+      position: absolute;
+      right: 24px;
+      bottom: 24px;
+      display: grid;
+      grid-template-columns: repeat(3, 48px);
+      gap: 8px;
+      pointer-events: auto;
+    }
+    .tc-btn {
+      width: 48px;
+      height: 48px;
+      background: linear-gradient(45deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.1));
+      border: 1px solid var(--stroke);
+      border-radius: 12px;
+      color: #dfdfe8;
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 48px;
+      text-align: center;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      box-shadow: inset 0 1px 0 0 rgba(255,255,255,0.05), 0 10px 30px rgba(0,0,0,0.4);
+      transition: all 0.2s ease-in-out;
+      user-select: none;
+    }
+    .tc-btn:active {
+      transform: translateY(1px);
+    }
   </style>
   <div class="glow-corner gc1"></div>
   <div class="glow-corner gc2"></div>
-  <button class="glass-button" disabled>ENERGIZE</button>
-  <button class="glass-button color" disabled>RANDOMIZE COLOR</button>
-  <button class="glass-button auth">UNLOCK</button>
+  <button class="glass-button">ENERGIZE</button>
+  <button class="glass-button color">RANDOMIZE COLOR</button>
+  <div class="touch-controls">
+    <button class="tc-btn" id="tc-up">↑</button>
+    <button class="tc-btn" id="tc-zoomin">＋</button>
+    <button class="tc-btn" id="tc-right">→</button>
+    <button class="tc-btn" id="tc-left">←</button>
+    <button class="tc-btn" id="tc-zoomout">−</button>
+    <button class="tc-btn" id="tc-down">↓</button>
+  </div>
   <canvas id="c"></canvas>
   <script type="importmap">
     {
@@ -137,6 +172,10 @@
     controls.maxDistance = 28.0;
     controls.autoRotate = false;
     controls.maxPolarAngle = Math.PI;
+    controls.enableZoom = true;
+    controls.enablePan = true;
+    controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    renderer.domElement.style.touchAction = 'none';
     controls.target.set(0, 0, 0);
     controls.update();
     composer = new EffectComposer(renderer);
@@ -326,47 +365,30 @@
       particleMaterial.uniforms.uGoldHue.value = base;
       particleMaterial.uniforms.uFieryHue.value = fiery;
     });
-    const authBtn = document.querySelector('.glass-button.auth');
-    const enc = (buf)=>btoa(String.fromCharCode.apply(null,new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-    const dec = (str)=>{str=str.replace(/-/g,'+').replace(/_/g,'/');const pad=str.length%4?4-(str.length%4):0;str+=pad?'='.repeat(pad):'';const bin=atob(str);const buf=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);return buf.buffer;};
-    function randBuf(n){const b=new Uint8Array(n);crypto.getRandomValues(b);return b.buffer;}
-    async function ensureCredential(){
-      const stored=localStorage.getItem('credId');
-      if(stored) return dec(stored);
-      const challenge=randBuf(32);
-      const userId=randBuf(32);
-      const pubKey={
-        rp:{name:document.title,id:location.hostname},
-        user:{id:new Uint8Array(userId),name:'user',displayName:'User'},
-        challenge:new Uint8Array(challenge),
-        pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],
-        authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required',residentKey:'preferred'},
-        timeout:60000
-      };
-      const cred=await navigator.credentials.create({publicKey:pubKey});
-      const id=(cred.rawId?enc(cred.rawId):enc(cred.response.getTransports?cred.rawId:cred.id));
-      localStorage.setItem('credId',id);
-      return cred.rawId||dec(id);
+    // Touchscreen overlay controls (press-and-hold)
+    const btnUp = document.getElementById('tc-up');
+    const btnDown = document.getElementById('tc-down');
+    const btnLeft = document.getElementById('tc-left');
+    const btnRight = document.getElementById('tc-right');
+    const btnZoomIn = document.getElementById('tc-zoomin');
+    const btnZoomOut = document.getElementById('tc-zoomout');
+    function hold(btn, stepFn){
+      let active=false, raf=0;
+      const step=()=>{ if(!active) return; stepFn(); controls.update(); raf=requestAnimationFrame(step); };
+      const down=(e)=>{ e.preventDefault(); active=true; step(); };
+      const up=()=>{ active=false; if(raf) cancelAnimationFrame(raf); };
+      btn.addEventListener('pointerdown', down, {passive:false});
+      btn.addEventListener('pointerup', up);
+      btn.addEventListener('pointerleave', up);
+      btn.addEventListener('pointercancel', up);
     }
-    async function fingerprintUnlock(){
-      try{
-        if(!window.isSecureContext||!window.PublicKeyCredential){button.disabled=false;colorBtn.disabled=false;authBtn.textContent='UNLOCKED';authBtn.disabled=true;return;}
-        const credId=await ensureCredential();
-        const challenge=randBuf(32);
-        const getReq={
-          challenge:new Uint8Array(challenge),
-          timeout:60000,
-          rpId:location.hostname,
-          userVerification:'required',
-          allowCredentials:[{type:'public-key',id:new Uint8Array(credId)}]
-        };
-        await navigator.credentials.get({publicKey:getReq});
-        button.disabled=false;colorBtn.disabled=false;authBtn.textContent='UNLOCKED';authBtn.disabled=true;
-      }catch(e){
-        button.disabled=false;colorBtn.disabled=false;authBtn.textContent='UNLOCKED';authBtn.disabled=true;
-      }
-    }
-    authBtn.addEventListener('click',()=>{fingerprintUnlock();});
+    const rotStep=0.02, tiltStep=0.02, zoomScale=1.02;
+    hold(btnLeft,  ()=>controls.rotateLeft( rotStep));
+    hold(btnRight, ()=>controls.rotateLeft(-rotStep));
+    hold(btnUp,    ()=>controls.rotateUp(   tiltStep));
+    hold(btnDown,  ()=>controls.rotateUp(  -tiltStep));
+    hold(btnZoomIn, ()=>controls.dollyIn(zoomScale));
+    hold(btnZoomOut,()=>controls.dollyOut(zoomScale));
     function animate() {
       requestAnimationFrame(animate);
       const t = clock.getElapsedTime();
